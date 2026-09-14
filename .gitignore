@@ -1,0 +1,11 @@
+# 개인 데이터 — 사람마다 다르므로 커밋하지 않는다
+# mirror clone 저장소
+repos/
+# 작성자 필터·제품 매핑 (양식: config.example.json)
+config.json
+# 진척도 기록
+progress.md
+
+node_modules/
+.claude/settings.local.json
+.DS_Store

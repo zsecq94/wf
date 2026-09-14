@@ -1,0 +1,10 @@
+{
+  "name": "wf",
+  "version": "0.2.0",
+  "description": "git 커밋을 관리자 보고용 작업 요약과 진척도로 — Claude Code · Codex 스킬 포함",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "bin": { "wf": "./wf.js" },
+  "engines": { "node": ">=18" }
+}
