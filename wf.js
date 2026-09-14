@@ -4,7 +4,7 @@
 //   wf add <git-url|경로> [이름]   저장소 등록 (repos/<이름>.git 에 mirror clone)
 //   wf ls                          등록된 저장소·설정 확인
 //   wf sync                        모든 저장소 fetch
-//   wf daily [날짜]                 작업 내역 출력 (기본: 오늘, fetch 후 실행)
+//   wf daily [범위]                 작업 내역 출력 (기본: 오늘, fetch 후 실행. last = 마지막 보고 이후)
 //   wf progress ...                진척도(progress.md) 조회/갱신
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -73,15 +73,28 @@ function repos() {
 const pad = (n) => String(n).padStart(2, '0');
 const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
-// 'today' | 'yesterday' | '-3' | 'YYYY-MM-DD' | 'A..B'
+// 하루:  'today' | 'yesterday' | '-3' | 'YYYY-MM-DD'      범위: 'A..B'
+// 기간:  'last' (마지막 보고 다음 날 ~ 오늘 — progress.md 최신 섹션 날짜 기준)
+//        'week' (이번 주 월요일 ~ 오늘) | 'lastweek' (지난주 월~일) | 'month' (이달 1일 ~ 오늘)
+const RANGE_HELP = 'today | yesterday | -N | YYYY-MM-DD | A..B | last | week | lastweek | month';
 function parseRange(arg = 'today') {
-  const shift = (days) => { const d = new Date(); d.setDate(d.getDate() + days); return ymd(d); };
+  const shift = (days, base = new Date()) => { const d = new Date(base); d.setDate(d.getDate() + days); return ymd(d); };
+  const today = shift(0);
+  const monday = (d) => shift(-((d.getDay() + 6) % 7), d); // 일요일(0) 은 -6
+  if (arg === 'last') {
+    const latest = loadProgress().at(-1)?.date;
+    if (!latest) die('progress.md 에 날짜 섹션이 없어 마지막 보고일을 알 수 없습니다. 범위를 직접 주세요.');
+    return { from: latest < today ? shift(1, new Date(latest)) : today, to: today };
+  }
+  if (arg === 'week') return { from: monday(new Date()), to: today };
+  if (arg === 'lastweek') { const from = shift(-7, new Date(monday(new Date()))); return { from, to: shift(6, new Date(from)) }; }
+  if (arg === 'month') return { from: today.slice(0, 8) + '01', to: today };
   const one = (s) => {
-    if (s === 'today') return shift(0);
+    if (s === 'today') return today;
     if (s === 'yesterday') return shift(-1);
     if (/^-\d+$/.test(s)) return shift(Number(s));
     if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-    return die(`날짜 형식 오류: ${s}  (today | yesterday | -N | YYYY-MM-DD | A..B)`);
+    return die(`날짜 형식 오류: ${s}  (${RANGE_HELP})`);
   };
   const [a, b = a] = arg.split('..');
   return { from: one(a), to: one(b) };
@@ -246,6 +259,17 @@ function cmdProgress([sub, title, ...rest], flags) {
     log(`[${sec.date}]`);
     return console.log(renderItems(sec.items));
   }
+  if (sub === 'done') { // 기간 안에 100% 가 된 항목 (완료 항목은 완료한 날 섹션에만 남는다)
+    const { from, to } = parseRange(title ?? 'month');
+    const seen = new Set(), done = [];
+    for (const s of sections) {
+      if (s.date < from || s.date > to) continue;
+      for (const i of s.items) if (i.raw == null && i.pct === 100 && !seen.has(i.title)) { seen.add(i.title); done.push({ date: s.date, ...i }); }
+    }
+    log(`[${from} ~ ${to}] 완료 ${done.length}건`);
+    for (const i of done) console.log([`${i.date}  ${i.title}`, ...i.notes.map((n) => `  - ${n}`)].join('\n'));
+    return;
+  }
   if (sub === 'history') { // 항목별 진척률 추이
     const titles = [...new Set(sections.flatMap((s) => s.items.filter((i) => i.raw == null).map((i) => i.title)))]
       .filter((t) => !title || t.toLowerCase().includes(title.toLowerCase()));
@@ -281,7 +305,7 @@ function cmdProgress([sub, title, ...rest], flags) {
       sec.items.splice(sec.items.indexOf(item), 1);
       log(`삭제: ${item.title}`);
       break;
-    default: die(`알 수 없는 하위 명령: ${sub}  (set | note | rm | history)`);
+    default: die(`알 수 없는 하위 명령: ${sub}  (set | note | rm | history | done)`);
   }
   saveProgress(sections);
   log(`[${sec.date}]`);
@@ -352,12 +376,14 @@ const HELP = `wf — git 이력 기반 작업 내역 / 진척도 CLI
   wf add <git-url|경로> [이름]        저장소 등록 (mirror clone → repos/)
   wf ls                               등록된 저장소·작성자 필터·제품 매핑 확인
   wf sync                             전체 저장소 fetch
-  wf daily [날짜] [--json] [--no-sync] 작업 내역 (기본 today; yesterday | -N | YYYY-MM-DD | A..B)
+  wf daily [범위] [--json] [--no-sync] 작업 내역 (기본 today)
+       범위: yesterday | -N | YYYY-MM-DD | A..B | last (마지막 보고 이후) | week | lastweek | month
   wf progress [--date=D]              진척도 출력 (기본: 최신 날짜 섹션)
   wf progress set "<제목>" <N> ["메모"] 진척률 갱신 (없으면 추가)
   wf progress note "<제목>" "<메모>"   메모 추가
   wf progress rm "<제목>"              항목 삭제
   wf progress history ["<제목>"]       항목별 진척률 추이
+  wf progress done [범위]              기간에 완료(100%)된 항목 (기본 month)
 
 config.json (양식: config.example.json) 의 authors 로 집계할 커밋을 고르고, products 규칙이 있으면
 daily 출력의 커밋마다 [제품명] 태그를 붙입니다 (scope 우선, 없으면 변경 파일 경로).

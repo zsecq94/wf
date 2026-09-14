@@ -69,7 +69,9 @@ wf ls                                         # 등록 저장소·작성자 필�
 # 작업 → 커밋 → 푸시 후
 wf daily                  # 오늘 커밋 (자동 fetch) + progress.md 를 마크다운으로 출력
 wf daily yesterday        # 어제
-wf daily -7..today        # 최근 1주
+wf daily last             # 마지막 보고 다음 날부터 오늘까지 (progress.md 최신 섹션 기준 — 월요일·휴가 뒤)
+wf daily week             # 이번 주 월요일부터.  lastweek = 지난주 월~일,  month = 이달 1일부터
+wf daily -7..today        # 최근 1주 (A..B 범위, -N = N일 전)
 wf daily 2026-09-10 --json
 wf sync                   # fetch 만
 
@@ -79,6 +81,7 @@ wf progress set "웹 관리자 - 설정 화면" 30 "재설계안 반영 시작" 
 wf progress note "웹 관리자 - 설정 화면" "차트 컴포넌트 완료"
 wf progress rm "알림"
 wf progress history                           # 항목별 진척률 추이 (09-10 30% → 09-11 90%)
+wf progress done lastweek                     # 그 기간에 100% 가 된 항목 (기본 month) — 주간·월간 보고용
 ```
 
 `progress.md` 는 `## YYYY-MM-DD` 섹션으로 날짜별로 쌓입니다. `wf daily` 를 돌리면 보고일 섹션이 없을 때
@@ -92,12 +95,15 @@ wf progress history                           # 항목별 진척률 추이 (09-1
 출력합니다. 커밋을 나열하지 않고 주제로 묶고, 저장소를 열어봐야 아는 이름(훅·파일 경로·심볼)은 역할
 설명으로 바꿔 씁니다. 자세한 규칙은 `.agents/skills/daily/SKILL.md`.
 
+스킬 `weekly` 는 같은 규칙으로 **한 주치**를 정리합니다 — 제품 단위로 결과만 남기게 더 압축하고, 그 기간에
+완료된 진척도 항목(`wf progress done`)을 앞에 둡니다. "주간 보고", "지난주 정리" 처럼 말하면 잡힙니다.
+
 **이 저장소 루트에서** 에이전트를 열고:
 
-| 도구        | 호출     | 준비                                                                                     |
-| ----------- | -------- | ---------------------------------------------------------------------------------------- |
-| Claude Code | `/daily` | 없음. `.claude/skills` 가 `.agents/skills` 를 가리키는 심볼릭 링크라 그대로 보입니다.      |
-| Codex CLI   | `$daily` | 처음 열 때 신뢰 여부를 물으면 **trusted** 로 답합니다. trusted 가 아니면 저장소 스킬(`.agents/skills/`)을 읽지 않습니다(Codex 0.154 에서 확인). |
+| 도구        | 호출                  | 준비                                                                                     |
+| ----------- | --------------------- | ---------------------------------------------------------------------------------------- |
+| Claude Code | `/daily` · `/weekly`  | 없음. `.claude/skills` 가 `.agents/skills` 를 가리키는 심볼릭 링크라 그대로 보입니다.      |
+| Codex CLI   | `$daily` · `$weekly`  | 처음 열 때 신뢰 여부를 물으면 **trusted** 로 답합니다. trusted 가 아니면 저장소 스킬(`.agents/skills/`)을 읽지 않습니다(Codex 0.154 에서 확인). |
 
 "오늘 한 일 정리해줘", "standup" 처럼 말해도 스킬이 잡힙니다. `wf daily yesterday` 처럼 범위를 바꾸고
 싶으면 "어제 커밋 요약" 이라고 하면 됩니다.
@@ -118,7 +124,8 @@ wf.js                      CLI 본체 (add · ls · sync · daily · progress)
 config.example.json        설정 양식 → 복사해서 config.json (gitignore)
 AGENTS.md                  에이전트 지침 정본 (Codex 가 직접 읽음)
 CLAUDE.md                  → @AGENTS.md 포인터
-.agents/skills/daily/      요약 스킬 정본 (Codex $daily)
+.agents/skills/daily/      일간 요약 스킬 정본 (Codex $daily)
+.agents/skills/weekly/     주간 요약 스킬 — daily 규칙 위에 압축·완료 항목 처리만 추가 ($weekly)
 .claude/skills → ../.agents/skills   Claude Code 용 링크 (/daily)
 repos/                     mirror clone 저장소 (gitignore)
 progress.md                진척도 — 날짜 섹션별로 누적 (gitignore)
