@@ -29,8 +29,19 @@ const die = (msg) => { log(msg); process.exit(1); };
 const config = loadConfig();
 function loadConfig() {
   if (!existsSync(CONFIG_FILE)) return {};
-  try { return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); }
+  let c;
+  try { c = JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); }
   catch (e) { return die(`config.json 파싱 실패: ${e.message}\n  config.example.json 을 참고해 고치세요.`); }
+  // 타입이 어긋나면 스택 트레이스 대신 어디가 틀렸는지 알려 준다
+  const bad = (what) => die(`config.json 형식 오류: ${what}\n  양식: config.example.json`);
+  if (c === null || typeof c !== 'object' || Array.isArray(c)) bad('최상위는 { } 객체여야 합니다');
+  if (c.authors != null && !(Array.isArray(c.authors) && c.authors.every((a) => typeof a === 'string'))) bad('authors 는 이메일 문자열 배열이어야 합니다');
+  if (c.products != null && !Array.isArray(c.products)) bad('products 는 규칙 배열이어야 합니다');
+  for (const [i, r] of (c.products ?? []).entries()) {
+    if (!r || typeof r !== 'object' || typeof r.name !== 'string') bad(`products[${i}] 에 name(문자열)이 필요합니다`);
+    for (const k of ['scope', 'path']) if (r[k] != null && !Array.isArray(r[k])) bad(`products[${i}].${k} 는 배열이어야 합니다`);
+  }
+  return c;
 }
 
 function git(cwd, args, opts = {}) {
@@ -281,6 +292,8 @@ function cmdProgress([sub, title, ...rest], flags) {
 function cmdAdd([src, name]) {
   if (!src) die('사용법: wf add <git-url|로컬경로> [이름]');
   name ??= basename(src.replace(/\/+$/, '')).replace(/\.git$/, '');
+  // 이름은 repos/ 바로 아래 디렉토리 하나여야 한다 — 경로가 섞이면 gitignore 밖에 mirror 가 생긴다
+  if (!name || /[\/\\]/.test(name) || name === '.' || name === '..') die(`저장소 이름에 경로를 쓸 수 없습니다: ${name}`);
   const dir = join(REPOS_DIR, `${name}.git`);
   if (existsSync(dir)) die(`이미 등록됨: ${dir}`);
   mkdirSync(REPOS_DIR, { recursive: true });
@@ -309,8 +322,9 @@ async function cmdSync() {
   const rs = repos();
   if (!rs.length) return log('등록된 저장소가 없습니다. wf add <url> 로 추가하세요.');
   await Promise.all(rs.map(async (r) => {
-    try { await execFileAsync('git', ['fetch', '--prune', '--quiet'], { cwd: r.dir }); log(`✓ ${r.name}`); }
-    catch (e) { log(`✗ ${r.name}: ${(e.stderr || e.message).trim()}`); }
+    // 응답 없는 원격(VPN 끊김 등)에서 무한 대기하지 않도록 timeout — 실패는 exit 1 로 알린다
+    try { await execFileAsync('git', ['fetch', '--prune', '--quiet'], { cwd: r.dir, timeout: 60_000 }); log(`✓ ${r.name}`); }
+    catch (e) { log(`✗ ${r.name}: ${e.killed ? '60초 내 응답 없음' : (e.stderr || e.message).trim()}`); process.exitCode = 1; }
   }));
 }
 
