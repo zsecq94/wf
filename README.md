@@ -1,5 +1,7 @@
 # wf — git 커밋을 보고용 작업 요약과 진척도로
 
+> **EN** — Turns today's git commits across several repos into a work summary a non-technical manager can read, plus a running progress tracker. A single-file Node CLI (no dependencies) collects and tags your commits; a shared `daily` skill for Claude Code and Codex rewrites internal names into plain-language roles and updates the progress file. Docs are in Korean; the skill's translation rules (see `.agents/skills/daily/SKILL.md`) apply to any language.
+
 여러 프로젝트 저장소의 커밋을 한 곳에 모아, **비개발 관리자에게 보낼 일일 작업 요약**과
 **진척도(progress.md)** 를 만드는 도구입니다. 단일 파일 Node CLI(`wf.js`, 외부 의존성 없음)와
 Claude Code · Codex 양쪽에서 같은 이름으로 쓰는 스킬(`daily`)로 이루어져 있습니다.
