@@ -18,14 +18,14 @@ Claude Code · Codex 양쪽에서 같은 이름으로 쓰는 스킬(`daily`)로 
 
 ## 요구사항
 
-- Node.js 18 이상, git
+- Node.js 18 이상, git 2.37 이상(`--since-as-filter`; 그보다 낮으면 `wf daily` 가 시작하지 않고 알려 줍니다)
 - (선택) [Claude Code](https://claude.com/claude-code) 또는 [Codex CLI](https://github.com/openai/codex) — 요약 스킬을 쓰려면 둘 중 하나
 
 ## 설치
 
 ```bash
 git clone <이 저장소 URL> wf && cd wf
-alias wf='node "$PWD/wf.js"'       # 셸 설정에 넣어 두면 어디서나 wf. 또는 npm link
+alias wf="node '$PWD/wf.js'"       # 지금 셸에서. 어디서나 쓰려면 `alias wf` 로 찍히는 줄(경로가 박힌)을 셸 설정에 넣거나 npm link
 ```
 
 아래 명령은 전부 `wf` 로 적지만, alias 없이 저장소 루트에서 `node wf.js` 로 실행해도 됩니다.

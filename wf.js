@@ -39,6 +39,14 @@ function git(cwd, args, opts = {}) {
   });
 }
 
+// --since-as-filter 는 git 2.37 에서 생겼다. 그보다 낮으면 log 가 실패해 "커밋 0개" 로 보일 수 있으므로 미리 막는다.
+function requireGit() {
+  let v;
+  try { v = git(ROOT, ['--version']); } catch { return die('git 을 찾을 수 없습니다. PATH 를 확인하세요.'); }
+  const [maj, min] = (/(\d+)\.(\d+)/.exec(v) ?? []).slice(1).map(Number);
+  if (!(maj > 2 || (maj === 2 && min >= 37))) die(`git ${maj}.${min} 감지 — 2.37 이상이 필요합니다 (--since-as-filter).`);
+}
+
 function authors() {
   if (config.authors?.length) return config.authors;
   try { return [git(ROOT, ['config', 'user.email']).trim()]; } catch { return []; }
@@ -73,15 +81,17 @@ const FS = '\x1f', RS = '\x1e';
 
 function collect(repo, { from, to }) {
   const args = [
-    '-c', 'core.quotePath=false', 'log', '--all', '--source', '--no-merges', '--reverse', '--numstat',
+    '-c', 'core.quotePath=false', 'log', '--branches', '--tags', '--source', '--no-merges', '--reverse', '--numstat',
     `--since-as-filter=${from} 00:00:00`, `--until=${to} 23:59:59`,
     '--date=format-local:%Y-%m-%d %H:%M',
     `--format=${RS}%H${FS}%h${FS}%ae${FS}%cd${FS}%S${FS}%s${FS}%b${FS}`,
-    ...authors().map((a) => `--author=${a}`),
+    // <email> 로 감싸 정확 일치 (부분 일치면 me@x.com 이 some@x.com 까지 잡는다). -F 로 +·. 을 문자 그대로.
+    '--fixed-strings', ...authors().map((a) => `--author=<${a}>`),
   ];
   let out;
-  try { out = git(repo.dir, args); } catch { return []; }
-  return out.split(RS).filter(Boolean).map((chunk) => {
+  try { out = git(repo.dir, args); }
+  catch (e) { return { commits: [], error: (e.stderr || e.message).trim().split('\n')[0] || 'git log 실패' }; }
+  const commits = out.split(RS).filter(Boolean).map((chunk) => {
     const [hash, short, email, date, source, subject, body, stat] = chunk.split(FS);
     const files = []; let add = 0, del = 0;
     for (const line of (stat || '').split('\n')) {
@@ -95,6 +105,7 @@ function collect(repo, { from, to }) {
       branch: source.replace(/^refs\/(heads|tags|remotes)\//, ''),
     };
   });
+  return { commits };
 }
 
 // ---------- 제품 매핑 ----------
@@ -122,7 +133,7 @@ function renderDaily(range, results) {
   const L = [
     `# ${single ? from : `${from} ~ ${to}`} 작업 내역`, '',
     `- 작성자: ${authors().join(', ')}`,
-    `- 커밋 ${all.length}개 / 저장소 ${results.filter((r) => r.commits.length).length}개 / +${sum('add')} -${sum('del')}`,
+    `- 커밋 ${all.length}개 / 저장소 ${results.filter((r) => r.commits.length).length}개 / +${sum('add')} -${sum('del')}${results.some((r) => r.error) ? ' / 수집 실패 있음' : ''}`,
   ];
   const products = [...new Set((config.products ?? []).map((r) => r.name))];
   L.push(products.length ? `- 제품 (커밋 앞 [태그], config.json products): ${products.join(' / ')}` : '- 제품 매핑 없음 — config.json 의 products 를 채우면 커밋마다 [제품명] 태그가 붙습니다', '');
@@ -146,12 +157,14 @@ function renderDaily(range, results) {
       L.push('');
     }
   }
-  const idle = results.filter((r) => !r.commits.length).map((r) => r.name);
+  const idle = results.filter((r) => !r.error && !r.commits.length).map((r) => r.name);
   if (idle.length) L.push(`_커밋 없음: ${idle.join(', ')}_`, '');
+  const failed = results.filter((r) => r.error);
+  if (failed.length) L.push(`**수집 실패 (보고에서 빠짐):** ${failed.map((r) => `${r.name} — ${r.error}`).join(' / ')}`, '');
   const sections = loadProgress();
   if (sections.length) {
     const { sec, created } = ensureSection(sections, to); // 보고일 섹션 — 없으면 직전 상태를 복사해 새로 만든다
-    if (created) { saveProgress(sections); log(`progress.md: ${to} 섹션 생성 (직전 미완료 항목 복사)`); }
+    if (created) { saveProgress(sections); log(`progress.md: ${to} 섹션 생성 (${created})`); }
     L.push(`## 진척도 (${sec.date})`, '', renderItems(sec.items), '');
   }
   return L.join('\n');
@@ -173,7 +186,7 @@ function loadProgress() {
     if ((m = /^##\s+(\d{4}-\d{2}-\d{2})\s*$/.exec(line))) { cur = { date: m[1], items: [] }; sections.push(cur); continue; }
     if (!cur) { cur = { date: ymd(new Date()), items: [] }; sections.push(cur); } // 헤더 없는 옛 형식 → 오늘 날짜로 흡수
     if ((m = /^(.*\S)\s+-\s+(\d{1,3})%$/.exec(line))) cur.items.push({ title: m[1], pct: +m[2], notes: [] });
-    else if ((m = /^-\s+(.*)$/.exec(line)) && cur.items.at(-1)) cur.items.at(-1).notes.push(m[1]);
+    else if ((m = /^-\s+(.*)$/.exec(line)) && cur.items.at(-1)?.notes) cur.items.at(-1).notes.push(m[1]);
     else cur.items.push({ raw: line }); // 형식 밖의 줄은 그대로 보존
   }
   return sections.sort((a, b) => a.date.localeCompare(b.date));
@@ -189,16 +202,17 @@ function saveProgress(sections) {
   writeFileSync(PROGRESS_FILE, sections.map((s) => `## ${s.date}\n\n${renderItems(s.items)}\n`).join('\n'));
 }
 
-// date 섹션을 돌려준다. 없으면 직전 섹션에서 아직 100% 가 아닌 항목만 복사해 만든다
-// (완료 항목은 완료된 날 섹션에만 남는다). 변경 사항은 저장하지 않음 — 호출자가 저장.
+// date 섹션을 돌려준다. 없으면 그 날짜보다 앞선 마지막 섹션에서 아직 100% 가 아닌 항목만 복사해 만든다
+// (완료 항목은 완료된 날 섹션에만 남는다). 앞선 섹션이 없으면(뒤 날짜만 있으면) 빈 섹션 — 미래 상태를
+// 과거로 복사하지 않는다. 변경 사항은 저장하지 않음 — 호출자가 저장.
 function ensureSection(sections, date) {
   let sec = sections.find((s) => s.date === date);
   if (sec) return { sec, created: false };
-  const prev = [...sections].reverse().find((s) => s.date < date) ?? sections.at(-1);
+  const prev = [...sections].reverse().find((s) => s.date < date);
   sec = { date, items: structuredClone((prev?.items ?? []).filter((i) => i.raw == null && i.pct < 100)) };
   sections.push(sec);
   sections.sort((a, b) => a.date.localeCompare(b.date));
-  return { sec, created: true };
+  return { sec, created: prev ? `${prev.date} 미완료 항목 복사` : '앞선 섹션 없음 — 빈 섹션' };
 }
 
 function findItem(items, q) {
@@ -233,12 +247,13 @@ function cmdProgress([sub, title, ...rest], flags) {
 
   if (!title) die(`사용법: wf progress ${sub} "<제목>" ...`);
   const { sec, created } = ensureSection(sections, dateFlag ?? ymd(new Date()));
-  if (created) log(`새 섹션 ${sec.date} (직전 미완료 항목 복사)`);
+  if (created) log(`새 섹션 ${sec.date} (${created})`);
   let item = findItem(sec.items, title);
   switch (sub) {
     case 'set': {
-      const pct = Math.min(100, Math.max(0, Number(String(rest[0]).replace('%', ''))));
-      if (Number.isNaN(pct)) die('사용법: wf progress set "<제목>" <0-100> ["메모"]');
+      const raw = String(rest[0] ?? '').replace(/%$/, '');
+      const pct = Number(raw);
+      if (!/^\d{1,3}$/.test(raw) || pct > 100) die(`진척률은 0-100 정수여야 합니다: ${rest[0] ?? '(없음)'}  — 사용법: wf progress set "<제목>" <0-100> ["메모"]`);
       if (!item) { item = { title, pct, notes: [] }; sec.items.push(item); log(`추가: ${title} - ${pct}%`); }
       else { log(`갱신: ${item.title} ${item.pct}% → ${pct}%`); item.pct = pct; }
       if (rest[1]) item.notes.push(rest[1]);
@@ -301,12 +316,14 @@ async function cmdSync() {
 
 async function cmdDaily([arg], flags) {
   const range = parseRange(arg);
+  requireGit();
   if (!repos().length) die('등록된 저장소가 없습니다. wf add <url> 로 추가하세요. (설정 절차: README.md)');
   if (!flags.has('--no-sync')) await cmdSync();
-  const results = repos().map((r) => ({
-    name: r.name,
-    commits: collect(r, range).map((c) => ({ ...c, product: productOf(r.name, c) })),
-  }));
+  const results = repos().map((r) => {
+    const { commits, error } = collect(r, range);
+    if (error) { log(`✗ ${r.name}: 커밋 수집 실패 — ${error}`); process.exitCode = 1; }
+    return { name: r.name, error, commits: commits.map((c) => ({ ...c, product: productOf(r.name, c) })) };
+  });
   if (flags.has('--json')) {
     const sections = loadProgress();
     const progress = sections.length ? ensureSection(sections, range.to).sec.items : [];
