@@ -72,6 +72,8 @@ function repos() {
 // ---------- 날짜 ----------
 const pad = (n) => String(n).padStart(2, '0');
 const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const fromYmd = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); }; // 로컬 자정
+const addDays = (s, n) => { const d = fromYmd(s); d.setDate(d.getDate() + n); return ymd(d); };
 
 // 하루:  'today' | 'yesterday' | '-3' | 'YYYY-MM-DD'      범위: 'A..B'
 // 기간:  'last' (마지막 보고 다음 날 ~ 오늘 — progress.md 최신 섹션 날짜 기준)
@@ -84,10 +86,10 @@ function parseRange(arg = 'today') {
   if (arg === 'last') {
     const latest = loadProgress().at(-1)?.date;
     if (!latest) die('progress.md 에 날짜 섹션이 없어 마지막 보고일을 알 수 없습니다. 범위를 직접 주세요.');
-    return { from: latest < today ? shift(1, new Date(latest)) : today, to: today };
+    return { from: latest < today ? addDays(latest, 1) : today, to: today };
   }
   if (arg === 'week') return { from: monday(new Date()), to: today };
-  if (arg === 'lastweek') { const from = shift(-7, new Date(monday(new Date()))); return { from, to: shift(6, new Date(from)) }; }
+  if (arg === 'lastweek') { const from = addDays(monday(new Date()), -7); return { from, to: addDays(from, 6) }; }
   if (arg === 'month') return { from: today.slice(0, 8) + '01', to: today };
   const one = (s) => {
     if (s === 'today') return today;
@@ -149,7 +151,7 @@ function productOf(repoName, c) {
   return rules.find((r) => !r.scope?.length && !r.path?.length)?.name ?? null;
 }
 
-function renderDaily(range, results) {
+function renderDaily(range, results, days = 7) {
   const { from, to } = range;
   const single = from === to;
   const all = results.flatMap((r) => r.commits);
@@ -187,9 +189,11 @@ function renderDaily(range, results) {
   if (failed.length) L.push(`**수집 실패 (보고에서 빠짐):** ${failed.map((r) => `${r.name} — ${r.error}`).join(' / ')}`, '');
   const sections = loadProgress();
   if (sections.length) {
-    const { sec, created } = ensureSection(sections, to); // 보고일 섹션 — 없으면 직전 상태를 복사해 새로 만든다
-    if (created) { saveProgress(sections); log(`progress.md: ${to} 섹션 생성 (${created})`); }
-    L.push(`## 진척도 (${sec.date})`, '', renderItems(sec.items), '');
+    // 보고일 섹션 — 오늘 보고일 때만 만들어 저장한다(마지막 보고일의 근거). 과거 범위 조회는 미리보기만.
+    const { sec, created } = ensureSection(sections, to);
+    if (created && to === ymd(new Date())) { saveProgress(sections); log(`progress.md: ${to} 섹션 생성 (${created})`); }
+    else if (created) log(`progress.md: ${to} 섹션 없음 — 미리보기 (${created}), progress set --date=${to} 하면 생성`);
+    L.push(`## 진척도 (${sec.date})`, '', renderBoard(sections, to, days), '');
   }
   return L.join('\n');
 }
@@ -220,6 +224,41 @@ function renderItems(items) {
   return items
     .map((i) => (i.raw != null ? i.raw : [`${i.title} - ${i.pct}%`, ...i.notes.map((n) => `- ${n}`)].join('\n')))
     .join('\n');
+}
+
+// 보고용 보기 — 저장 형식은 그대로 두고 보여 주는 모양만 바꾼다.
+//   제품별로 묶고(config.json products 이름이 제목 앞에 오면 그 제품), 진행 중 항목 아래에
+//   최근 days 일 안에 완료된 항목을 ✓ 로 같이 둔다. 완료가 다음 날 바로 사라져 "진척" 이 안 보이던 것을 막는다.
+function renderBoard(sections, date, days = 7) {
+  const sec = sections.find((s) => s.date === date);
+  const open = (sec?.items ?? []).filter((i) => i.raw != null || i.pct < 100);
+  const done = new Map(); // title → 완료일 (같은 제목이 여러 날 100% 면 마지막 날)
+  const since = addDays(date, -days);
+  for (const s of sections) {
+    if (s.date < since || s.date > date) continue;
+    for (const i of s.items) if (i.raw == null && i.pct === 100) done.set(i.title, s.date);
+  }
+  const products = [...new Set((config.products ?? []).map((r) => r.name))];
+  const byLen = [...products].sort((a, b) => b.length - a.length); // 긴 이름부터 맞춘다 ("웹" 보다 "웹 관리자")
+  const split = (title) => {
+    const p = byLen.find((n) => title.startsWith(n));
+    return p ? [p, title.slice(p.length).replace(/^\s*-\s*|^\s+/, '') || title] : [null, title];
+  };
+  const groups = new Map(products.map((p) => [p, []]));
+  groups.set(null, []);
+  for (const i of open) {
+    if (i.raw != null) { groups.get(null).push(i.raw); continue; }
+    const [p, rest] = split(i.title);
+    groups.get(p).push(`${rest} - ${i.pct}%`, ...i.notes.map((n) => `  - ${n}`));
+  }
+  for (const [title, d] of [...done].sort((a, b) => b[1].localeCompare(a[1]))) {
+    const [p, rest] = split(title);
+    groups.get(p).push(`✓ ${rest} (${d.slice(5)})`);
+  }
+  if (!products.length) return groups.get(null).join('\n') || '(항목 없음)'; // 제품 매핑이 없으면 평평하게
+  const L = [];
+  for (const [p, lines] of groups) if (lines.length) L.push(p ?? '기타', ...lines.map((l) => `  ${l}`));
+  return L.length ? L.join('\n') : '(항목 없음)';
 }
 
 function saveProgress(sections) {
@@ -253,11 +292,15 @@ function cmdProgress([sub, title, ...rest], flags) {
   const dateFlag = [...flags].find((f) => f.startsWith('--date='))?.slice(7);
   if (dateFlag && !/^\d{4}-\d{2}-\d{2}$/.test(dateFlag)) die('--date=YYYY-MM-DD 형식으로 주세요.');
 
-  if (!sub) { // 조회: 지정 날짜 또는 최신 섹션
-    const sec = dateFlag ? sections.find((s) => s.date === dateFlag) : sections.at(-1);
-    if (!sec) return log(sections.length ? `${dateFlag} 섹션 없음 (있는 날짜: ${sections.map((s) => s.date).join(', ')})` : 'progress.md 가 비어 있습니다. wf progress set "<제목>" <N> 으로 추가하세요.');
-    log(`[${sec.date}]`);
-    return console.log(renderItems(sec.items));
+  const days = Number([...flags].find((f) => f.startsWith('--days='))?.slice(7) ?? 7);
+  if (!Number.isInteger(days) || days < 0) die('--days=N (0 이상 정수) 형식으로 주세요.');
+
+  if (!sub) { // 조회: 지정 날짜(없으면 최신 섹션)의 보고용 보기. 섹션이 없으면 만들지 않고 미리보기만.
+    if (!sections.length) return log('progress.md 가 비어 있습니다. wf progress set "<제목>" <N> 으로 추가하세요.');
+    const date = dateFlag ?? sections.at(-1).date;
+    const { created } = ensureSection(sections, date);
+    log(`[${date}]${created ? ` (섹션 없음 — ${created}, set 하면 생성)` : ''}${days ? ` 완료 ${days}일` : ''}`);
+    return console.log(renderBoard(sections, date, days));
   }
   if (sub === 'done') { // 기간 안에 100% 가 된 항목 (완료 항목은 완료한 날 섹션에만 남는다)
     const { from, to } = parseRange(title ?? 'month');
@@ -274,7 +317,8 @@ function cmdProgress([sub, title, ...rest], flags) {
     const titles = [...new Set(sections.flatMap((s) => s.items.filter((i) => i.raw == null).map((i) => i.title)))]
       .filter((t) => !title || t.toLowerCase().includes(title.toLowerCase()));
     for (const t of titles) {
-      const trail = sections.map((s) => { const i = s.items.find((x) => x.title === t); return i ? `${s.date.slice(5)} ${i.pct}%` : null; }).filter(Boolean);
+      const trail = []; let last;
+      for (const s of sections) { const i = s.items.find((x) => x.title === t); if (i && i.pct !== last) { trail.push(`${s.date.slice(5)} ${i.pct}%`); last = i.pct; } }
       console.log(`${t}\n  ${trail.join(' → ')}`);
     }
     return;
@@ -309,7 +353,7 @@ function cmdProgress([sub, title, ...rest], flags) {
   }
   saveProgress(sections);
   log(`[${sec.date}]`);
-  console.log(renderItems(sec.items));
+  console.log(renderBoard(sections, sec.date, days));
 }
 
 // ---------- 저장소 ----------
@@ -367,7 +411,8 @@ async function cmdDaily([arg], flags) {
     const progress = sections.length ? ensureSection(sections, range.to).sec.items : [];
     return console.log(JSON.stringify({ ...range, authors: authors(), repos: results, progress }, null, 2));
   }
-  console.log(renderDaily(range, results));
+  const days = Number([...flags].find((f) => f.startsWith('--days='))?.slice(7) ?? 7);
+  console.log(renderDaily(range, results, Number.isInteger(days) && days >= 0 ? days : 7));
 }
 
 // ---------- main ----------
@@ -378,7 +423,7 @@ const HELP = `wf — git 이력 기반 작업 내역 / 진척도 CLI
   wf sync                             전체 저장소 fetch
   wf daily [범위] [--json] [--no-sync] 작업 내역 (기본 today)
        범위: yesterday | -N | YYYY-MM-DD | A..B | last (마지막 보고 이후) | week | lastweek | month
-  wf progress [--date=D]              진척도 출력 (기본: 최신 날짜 섹션)
+  wf progress [--date=D] [--days=N]   진척도 보고용 보기 — 제품별 진행 중 + 최근 N일(기본 7) 완료 ✓
   wf progress set "<제목>" <N> ["메모"] 진척률 갱신 (없으면 추가)
   wf progress note "<제목>" "<메모>"   메모 추가
   wf progress rm "<제목>"              항목 삭제
@@ -390,6 +435,8 @@ daily 출력의 커밋마다 [제품명] 태그를 붙입니다 (scope 우선, �
 
 progress.md 는 날짜(## YYYY-MM-DD) 섹션으로 쌓입니다. set/note/rm 은 오늘 섹션에 적용되며
 (--date=YYYY-MM-DD 로 변경 가능), 섹션이 없으면 직전 날짜에서 100% 미만인 항목만 복사해 만듭니다.
+조회(wf progress, wf daily 의 진척도 블록)는 제품별로 묶어 보여 주고 파일을 바꾸지 않습니다
+(wf daily 는 보고일이 오늘일 때만 섹션을 만듭니다).
 제목은 정확히 일치하거나, 유일하게 부분 일치하면 됩니다. (예: "홈")
 `;
 
