@@ -226,39 +226,21 @@ function renderItems(items) {
     .join('\n');
 }
 
-// 보고용 보기 — 저장 형식은 그대로 두고 보여 주는 모양만 바꾼다.
-//   제품별로 묶고(config.json products 이름이 제목 앞에 오면 그 제품), 진행 중 항목 아래에
-//   최근 days 일 안에 완료된 항목을 ✓ 로 같이 둔다. 완료가 다음 날 바로 사라져 "진척" 이 안 보이던 것을 막는다.
+// 보고용 보기 — 저장 형식과 같은 `제목 - N%` 한 줄 형식이되, 보고일 섹션의 진행 중 항목 뒤에
+// 최근 days 일 안에 완료된 항목을 `제목 - 100%` 로 같이 둔다. 완료가 다음 날 바로 사라져 진척이
+// 누적돼 보이지 않던 것을 막는다. 파일은 바꾸지 않는다.
 function renderBoard(sections, date, days = 7) {
   const sec = sections.find((s) => s.date === date);
   const open = (sec?.items ?? []).filter((i) => i.raw != null || i.pct < 100);
-  const done = new Map(); // title → 완료일 (같은 제목이 여러 날 100% 면 마지막 날)
+  const done = new Map(); // title → 완료한 날의 항목 (같은 제목이 여러 날 100% 면 마지막 날)
   const since = addDays(date, -days);
   for (const s of sections) {
     if (s.date < since || s.date > date) continue;
-    for (const i of s.items) if (i.raw == null && i.pct === 100) done.set(i.title, s.date);
+    for (const i of s.items) if (i.raw == null && i.pct === 100) done.set(i.title, { ...i, date: s.date });
   }
-  const products = [...new Set((config.products ?? []).map((r) => r.name))];
-  const byLen = [...products].sort((a, b) => b.length - a.length); // 긴 이름부터 맞춘다 ("웹" 보다 "웹 관리자")
-  const split = (title) => {
-    const p = byLen.find((n) => title.startsWith(n));
-    return p ? [p, title.slice(p.length).replace(/^\s*-\s*|^\s+/, '') || title] : [null, title];
-  };
-  const groups = new Map(products.map((p) => [p, []]));
-  groups.set(null, []);
-  for (const i of open) {
-    if (i.raw != null) { groups.get(null).push(i.raw); continue; }
-    const [p, rest] = split(i.title);
-    groups.get(p).push(`${rest} - ${i.pct}%`, ...i.notes.map((n) => `  - ${n}`));
-  }
-  for (const [title, d] of [...done].sort((a, b) => b[1].localeCompare(a[1]))) {
-    const [p, rest] = split(title);
-    groups.get(p).push(`✓ ${rest} (${d.slice(5)})`);
-  }
-  if (!products.length) return groups.get(null).join('\n') || '(항목 없음)'; // 제품 매핑이 없으면 평평하게
-  const L = [];
-  for (const [p, lines] of groups) if (lines.length) L.push(p ?? '기타', ...lines.map((l) => `  ${l}`));
-  return L.length ? L.join('\n') : '(항목 없음)';
+  const recent = [...done.values()].sort((a, b) => b.date.localeCompare(a.date));
+  const out = renderItems([...open, ...recent]);
+  return out || '(항목 없음)';
 }
 
 function saveProgress(sections) {
@@ -423,7 +405,7 @@ const HELP = `wf — git 이력 기반 작업 내역 / 진척도 CLI
   wf sync                             전체 저장소 fetch
   wf daily [범위] [--json] [--no-sync] 작업 내역 (기본 today)
        범위: yesterday | -N | YYYY-MM-DD | A..B | last (마지막 보고 이후) | week | lastweek | month
-  wf progress [--date=D] [--days=N]   진척도 보고용 보기 — 제품별 진행 중 + 최근 N일(기본 7) 완료 ✓
+  wf progress [--date=D] [--days=N]   진척도 — 진행 중 + 최근 N일(기본 7) 완료 항목
   wf progress set "<제목>" <N> ["메모"] 진척률 갱신 (없으면 추가)
   wf progress note "<제목>" "<메모>"   메모 추가
   wf progress rm "<제목>"              항목 삭제
@@ -435,7 +417,7 @@ daily 출력의 커밋마다 [제품명] 태그를 붙입니다 (scope 우선, �
 
 progress.md 는 날짜(## YYYY-MM-DD) 섹션으로 쌓입니다. set/note/rm 은 오늘 섹션에 적용되며
 (--date=YYYY-MM-DD 로 변경 가능), 섹션이 없으면 직전 날짜에서 100% 미만인 항목만 복사해 만듭니다.
-조회(wf progress, wf daily 의 진척도 블록)는 제품별로 묶어 보여 주고 파일을 바꾸지 않습니다
+조회(wf progress, wf daily 의 진척도 블록)는 파일을 바꾸지 않습니다
 (wf daily 는 보고일이 오늘일 때만 섹션을 만듭니다).
 제목은 정확히 일치하거나, 유일하게 부분 일치하면 됩니다. (예: "홈")
 `;
