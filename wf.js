@@ -151,7 +151,7 @@ function productOf(repoName, c) {
   return rules.find((r) => !r.scope?.length && !r.path?.length)?.name ?? null;
 }
 
-function renderDaily(range, results, days = 7) {
+function renderDaily(range, results, board = {}) {
   const { from, to } = range;
   const single = from === to;
   const all = results.flatMap((r) => r.commits);
@@ -193,7 +193,7 @@ function renderDaily(range, results, days = 7) {
     const { sec, created } = ensureSection(sections, to);
     if (created && to === ymd(new Date())) { saveProgress(sections); log(`progress.md: ${to} 섹션 생성 (${created})`); }
     else if (created) log(`progress.md: ${to} 섹션 없음 — 미리보기 (${created}), progress set --date=${to} 하면 생성`);
-    L.push(`## 진척도 (${sec.date})`, '', renderBoard(sections, to, days), '');
+    L.push(`## 진척도 (${sec.date})`, '', renderBoard(sections, to, board), '');
   }
   return L.join('\n');
 }
@@ -226,21 +226,25 @@ function renderItems(items) {
     .join('\n');
 }
 
-// 보고용 보기 — 저장 형식과 같은 `제목 - N%` 한 줄 형식이되, 보고일 섹션의 진행 중 항목 뒤에
-// 최근 days 일 안에 완료된 항목을 `제목 - 100%` 로 같이 둔다. 완료가 다음 날 바로 사라져 진척이
-// 누적돼 보이지 않던 것을 막는다. 파일은 바꾸지 않는다.
-function renderBoard(sections, date, days = 7) {
+// 보고용 보기 — 저장 형식과 같은 `제목 - N%` 한 줄 형식이되, 보고일에 **바뀐 항목만** 낸다: 기준 시점에
+// 없던 항목, 진척률이 달라진 항목, 메모가 늘어난 항목. 기준은 직전 섹션이고, days 를 주면 date-days 일
+// 이전의 마지막 섹션(주간 보고 등 범위 보기). all 이면 그날 섹션 전체. 파일은 바꾸지 않는다.
+function renderBoard(sections, date, { days, all = false } = {}) {
   const sec = sections.find((s) => s.date === date);
-  const open = (sec?.items ?? []).filter((i) => i.raw != null || i.pct < 100);
-  const done = new Map(); // title → 완료한 날의 항목 (같은 제목이 여러 날 100% 면 마지막 날)
-  const since = addDays(date, -days);
-  for (const s of sections) {
-    if (s.date < since || s.date > date) continue;
-    for (const i of s.items) if (i.raw == null && i.pct === 100) done.set(i.title, { ...i, date: s.date });
-  }
-  const recent = [...done.values()].sort((a, b) => b.date.localeCompare(a.date));
-  const out = renderItems([...open, ...recent]);
-  return out || '(항목 없음)';
+  const items = sec?.items ?? [];
+  if (all) return renderItems(items) || '(항목 없음)';
+  const limit = days ? addDays(date, -days) : date;
+  const base = [...sections].reverse().find((s) => (days ? s.date <= limit : s.date < limit));
+  const before = new Map((base?.items ?? []).filter((i) => i.raw == null).map((i) => [i.title, i]));
+  // 범위 보기: 그 사이에 완료된 항목은 완료한 날 섹션에만 남으므로 거기서 모아 온다
+  const mid = sections.filter((s) => s.date > limit && s.date < date)
+    .flatMap((s) => s.items.filter((i) => i.raw == null && i.pct === 100 && !items.some((c) => c.title === i.title)));
+  const changed = [...items, ...mid.filter((i, k) => mid.findLastIndex((x) => x.title === i.title) === k)].filter((i) => {
+    if (i.raw != null) return !(base?.items ?? []).some((b) => b.raw === i.raw);
+    const b = before.get(i.title);
+    return !b || b.pct !== i.pct || i.notes.length > b.notes.length;
+  });
+  return renderItems(changed) || (base ? `(${base.date} 이후 바뀐 항목 없음)` : '(항목 없음)');
 }
 
 function saveProgress(sections) {
@@ -269,20 +273,27 @@ function findItem(items, q) {
   return hits[0];
 }
 
+// --days=N (N일 전 상태 대비 변경) / --all (섹션 전체)
+function boardFlags(flags) {
+  const raw = [...flags].find((f) => f.startsWith('--days='))?.slice(7);
+  const days = raw == null ? undefined : Number(raw);
+  if (raw != null && (!Number.isInteger(days) || days < 1)) die('--days=N (1 이상 정수) 형식으로 주세요.');
+  return { days, all: flags.has('--all') };
+}
+
 function cmdProgress([sub, title, ...rest], flags) {
   const sections = loadProgress();
   const dateFlag = [...flags].find((f) => f.startsWith('--date='))?.slice(7);
   if (dateFlag && !/^\d{4}-\d{2}-\d{2}$/.test(dateFlag)) die('--date=YYYY-MM-DD 형식으로 주세요.');
 
-  const days = Number([...flags].find((f) => f.startsWith('--days='))?.slice(7) ?? 7);
-  if (!Number.isInteger(days) || days < 0) die('--days=N (0 이상 정수) 형식으로 주세요.');
+  const board = boardFlags(flags);
 
   if (!sub) { // 조회: 지정 날짜(없으면 최신 섹션)의 보고용 보기. 섹션이 없으면 만들지 않고 미리보기만.
     if (!sections.length) return log('progress.md 가 비어 있습니다. wf progress set "<제목>" <N> 으로 추가하세요.');
     const date = dateFlag ?? sections.at(-1).date;
     const { created } = ensureSection(sections, date);
-    log(`[${date}]${created ? ` (섹션 없음 — ${created}, set 하면 생성)` : ''}${days ? ` 완료 ${days}일` : ''}`);
-    return console.log(renderBoard(sections, date, days));
+    log(`[${date}]${created ? ` (섹션 없음 — ${created}, set 하면 생성)` : ''}${board.all ? ' 전체' : board.days ? ` ${board.days}일 전 대비 변경` : ' 직전 대비 변경'}`);
+    return console.log(renderBoard(sections, date, board));
   }
   if (sub === 'done') { // 기간 안에 100% 가 된 항목 (완료 항목은 완료한 날 섹션에만 남는다)
     const { from, to } = parseRange(title ?? 'month');
@@ -335,7 +346,7 @@ function cmdProgress([sub, title, ...rest], flags) {
   }
   saveProgress(sections);
   log(`[${sec.date}]`);
-  console.log(renderBoard(sections, sec.date, days));
+  console.log(renderBoard(sections, sec.date, board));
 }
 
 // ---------- 저장소 ----------
@@ -393,8 +404,7 @@ async function cmdDaily([arg], flags) {
     const progress = sections.length ? ensureSection(sections, range.to).sec.items : [];
     return console.log(JSON.stringify({ ...range, authors: authors(), repos: results, progress }, null, 2));
   }
-  const days = Number([...flags].find((f) => f.startsWith('--days='))?.slice(7) ?? 7);
-  console.log(renderDaily(range, results, Number.isInteger(days) && days >= 0 ? days : 7));
+  console.log(renderDaily(range, results, boardFlags(flags)));
 }
 
 // ---------- main ----------
@@ -405,7 +415,7 @@ const HELP = `wf — git 이력 기반 작업 내역 / 진척도 CLI
   wf sync                             전체 저장소 fetch
   wf daily [범위] [--json] [--no-sync] 작업 내역 (기본 today)
        범위: yesterday | -N | YYYY-MM-DD | A..B | last (마지막 보고 이후) | week | lastweek | month
-  wf progress [--date=D] [--days=N]   진척도 — 진행 중 + 최근 N일(기본 7) 완료 항목
+  wf progress [--date=D]              진척도 — 그날 바뀐 항목만 (--days=N: N일 전 대비, --all: 전체)
   wf progress set "<제목>" <N> ["메모"] 진척률 갱신 (없으면 추가)
   wf progress note "<제목>" "<메모>"   메모 추가
   wf progress rm "<제목>"              항목 삭제
