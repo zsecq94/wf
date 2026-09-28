@@ -199,10 +199,10 @@ function renderDaily(range, results, board = {}) {
 }
 
 // ---------- 진척도 (progress.md) ----------
-// 날짜별 섹션으로 쌓인다. 새 날짜 섹션은 직전 섹션을 복사해서 시작한다.
+// 날짜별 섹션으로 쌓인다. 새 날짜 섹션은 직전 섹션을 복사해서 시작한다(메모는 빼고).
 //   ## YYYY-MM-DD
 //   <제목> - <N>%        (제목에 ' - ' 포함 가능)
-//   - <메모>              (직전 항목에 귀속)
+//   - <메모>              (직전 항목에 귀속, 그 날짜 작업에서 나온 이슈만)
 function loadProgress() {
   const sections = [];
   if (!existsSync(PROGRESS_FILE)) return sections;
@@ -227,7 +227,7 @@ function renderItems(items) {
 }
 
 // 보고용 보기 — 저장 형식과 같은 `제목 - N%` 한 줄 형식이되, 보고일에 **바뀐 항목만** 낸다: 기준 시점에
-// 없던 항목, 진척률이 달라진 항목, 메모가 늘어난 항목. 기준은 직전 섹션이고, days 를 주면 date-days 일
+// 없던 항목, 진척률이 달라진 항목, 메모(그날 이슈)가 있는 항목. 기준은 직전 섹션이고, days 를 주면 date-days 일
 // 이전의 마지막 섹션(주간 보고 등 범위 보기). all 이면 그날 섹션 전체. 파일은 바꾸지 않는다.
 function renderBoard(sections, date, { days, all = false } = {}) {
   const sec = sections.find((s) => s.date === date);
@@ -242,7 +242,7 @@ function renderBoard(sections, date, { days, all = false } = {}) {
   const changed = [...items, ...mid.filter((i, k) => mid.findLastIndex((x) => x.title === i.title) === k)].filter((i) => {
     if (i.raw != null) return !(base?.items ?? []).some((b) => b.raw === i.raw);
     const b = before.get(i.title);
-    return !b || b.pct !== i.pct || i.notes.length > b.notes.length;
+    return !b || b.pct !== i.pct || i.notes.length > 0;
   });
   return renderItems(changed) || (base ? `(${base.date} 이후 바뀐 항목 없음)` : '(항목 없음)');
 }
@@ -251,14 +251,16 @@ function saveProgress(sections) {
   writeFileSync(PROGRESS_FILE, sections.map((s) => `## ${s.date}\n\n${renderItems(s.items)}\n`).join('\n'));
 }
 
-// date 섹션을 돌려준다. 없으면 그 날짜보다 앞선 마지막 섹션에서 아직 100% 가 아닌 항목만 복사해 만든다
+// date 섹션을 돌려준다. 없으면 그 날짜보다 앞선 마지막 섹션에서 아직 100% 가 아닌 항목만 메모 없이 복사해 만든다
 // (완료 항목은 완료된 날 섹션에만 남는다). 앞선 섹션이 없으면(뒤 날짜만 있으면) 빈 섹션 — 미래 상태를
 // 과거로 복사하지 않는다. 변경 사항은 저장하지 않음 — 호출자가 저장.
 function ensureSection(sections, date) {
   let sec = sections.find((s) => s.date === date);
   if (sec) return { sec, created: false };
   const prev = [...sections].reverse().find((s) => s.date < date);
-  sec = { date, items: structuredClone((prev?.items ?? []).filter((i) => i.raw == null && i.pct < 100)) };
+  // 메모는 그날 작업에서 나온 이슈만 적는 자리라 복사하지 않는다 — 이어지는 사정은 그날 다시 적는다
+  const carry = (prev?.items ?? []).filter((i) => i.raw == null && i.pct < 100).map((i) => ({ ...i, notes: [] }));
+  sec = { date, items: carry };
   sections.push(sec);
   sections.sort((a, b) => a.date.localeCompare(b.date));
   return { sec, created: prev ? `${prev.date} 미완료 항목 복사` : '앞선 섹션 없음 — 빈 섹션' };
@@ -426,7 +428,7 @@ config.json (양식: config.example.json) 의 authors 로 집계할 커밋을 �
 daily 출력의 커밋마다 [제품명] 태그를 붙입니다 (scope 우선, 없으면 변경 파일 경로).
 
 progress.md 는 날짜(## YYYY-MM-DD) 섹션으로 쌓입니다. set/note/rm 은 오늘 섹션에 적용되며
-(--date=YYYY-MM-DD 로 변경 가능), 섹션이 없으면 직전 날짜에서 100% 미만인 항목만 복사해 만듭니다.
+(--date=YYYY-MM-DD 로 변경 가능), 섹션이 없으면 직전 날짜에서 100% 미만인 항목만 (메모 없이) 복사해 만듭니다.
 조회(wf progress, wf daily 의 진척도 블록)는 파일을 바꾸지 않습니다
 (wf daily 는 보고일이 오늘일 때만 섹션을 만듭니다).
 제목은 정확히 일치하거나, 유일하게 부분 일치하면 됩니다. (예: "홈")
